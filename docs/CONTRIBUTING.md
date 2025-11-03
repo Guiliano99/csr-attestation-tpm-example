@@ -1,5 +1,10 @@
 # Contributing
 
+The original contributions to the file(s) in this folder were contributed
+under the IETF conditions which are copied below as of 2025-11-02. After that
+date Contributions may be under different terms. Before making any
+contribution contact the repo owner for more information.
+
 This repository relates to activities in the Internet Engineering Task Force
 ([IETF](https://www.ietf.org/)). All material in this repository is considered
 Contributions to the IETF Standards Process, as defined in the intellectual
