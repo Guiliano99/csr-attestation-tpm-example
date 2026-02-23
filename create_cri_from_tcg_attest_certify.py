@@ -5,8 +5,8 @@ from cryptography import x509
 from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import serialization, hashes
 
-from pyasn1.type import univ, char, namedtype, constraint, opentype
-from pyasn1.codec.der import decoder 
+from pyasn1.type import univ, namedtype, constraint, tag
+from pyasn1.codec.der import decoder
 from pyasn1.codec.der.decoder import decode
 from pyasn1.codec.der.encoder import encode
 
@@ -19,11 +19,9 @@ from pyasn1_alt_modules import rfc2986, rfc5280, rfc5751
 # CHANGE ME once TCG assigns one.
 OID_cg_attest_tpm_certify = univ.ObjectIdentifier((2, 23, 133, 20, 1))
 
-# CHANGE ME once these is early allocation of this 
+# CHANGE ME once these is early allocation of this
 # id-aa-evidence OBJECT IDENTIFIER ::= { id-aa TBDAA }
 id_aa_evidence = univ.ObjectIdentifier(rfc5751.id_aa + (59,))
-
-hint = "tpmverifier.example.com"
 
 # Generic upper limit for ASN.1 Sequences and stuff.
 MAX = 10
@@ -99,42 +97,141 @@ STATEMENT_MAPPINGS = {
     OID_cg_attest_tpm_certify: TcgAttestCertify(),
 }
 
+# ---------------------------------------------------------------------------
+# AttestAttrSet / Attributes helper
+# ---------------------------------------------------------------------------
 
-# from draft-ietf-lamps-csr-attestation
-# EvidenceStatement ::= SEQUENCE {
-#    type   EVIDENCE-STATEMENT.&id({EvidenceStatementSet}),
-#    stmt   EVIDENCE-STATEMENT.&Type({EvidenceStatementSet}{@type}),
-#    hint   UTF8String OPTIONAL
+
+# AttestAttrSet ATTRIBUTE ::= { ... }  -- None defined in this document
+# Modelled as a SET OF ANY to accept any attribute without constraining the
+# open type at the pyasn1 level.
+# draft-ietf-lamps-csr-attestation-22, Section 4.1
+class AttestAttrSet(univ.SetOf):
+    """Set of additional attributes for an AttestationStatement (open type)."""
+
+    componentType = rfc2986.Attribute()
+
+
+# ---------------------------------------------------------------------------
+# OtherCertificateFormat
+# ---------------------------------------------------------------------------
+
+
+# OtherCertificateFormat ::= SEQUENCE {
+#     otherCertFormat  OTHER-CERT-FMT.&id({SupportedCertFormats}),
+#     otherCert        OTHER-CERT-FMT.&Type({SupportedCertFormats}{@otherCertFormat})
 # }
-class EvidenceStatement(univ.Sequence):
+# draft-ietf-lamps-csr-attestation-22, Section 4.1 (reproduced from RFC 6268)
+class OtherCertificateFormat(univ.Sequence):
+    """Non-X.509 certificate format wrapper (open type, OID + content)."""
+
     componentType = namedtype.NamedTypes(
-        namedtype.NamedType('type', univ.ObjectIdentifier()),
-        namedtype.NamedType('stmt', univ.Any(),
-                            openType=opentype.OpenType('type', STATEMENT_MAPPINGS)),
-        namedtype.OptionalNamedType('hint', char.UTF8String())
+        namedtype.NamedType("otherCertFormat", univ.ObjectIdentifier()),
+        namedtype.NamedType("otherCert", univ.Any()),
     )
 
-# EvidenceStatementSet ::= SEQUENCE SIZE (1..MAX) OF EvidenceStatement
-class EvidenceStatementSet(univ.SequenceOf):
-    componentType = EvidenceStatement()
-    subtypeSpec = constraint.ValueSizeConstraint(1, MAX)
 
-# EvidenceBundle ::= SEQUENCE {
-#   evidences SEQUENCE SIZE (1..MAX) OF EvidenceStatement,
-#   certs SEQUENCE SIZE (1..MAX) OF CertificateChoices OPTIONAL
-#      -- CertificateChoices MUST NOT contain the depreciated
-#      -- certificate structures or attribute certificates,
-#      -- see Section 10.2.2 of [RFC5652]
-#}
+# ---------------------------------------------------------------------------
+# LimitedCertChoices
+# ---------------------------------------------------------------------------
 
-class EvidenceBundle(univ.Sequence):
+
+# LimitedCertChoices ::= CertificateChoices
+#   (WITH COMPONENTS { certificate, other })
+#
+# This is CertificateChoices restricted to only 'certificate' and 'other'
+# (i.e. extendedCertificate, v1AttrCert, v2AttrCert are excluded).
+# draft-ietf-lamps-csr-attestation-22, Section 4.1
+class LimitedCertChoices(univ.Choice):
+    """CertificateChoices restricted to 'certificate' and 'other'."""
+
     componentType = namedtype.NamedTypes(
-        namedtype.NamedType('evidences', EvidenceStatementSet()),
-        namedtype.OptionalNamedType('certs', univ.SequenceOf(
-            componentType = rfc5280.Certificate()).subtype( 
-                subtypeSpec = constraint.ValueSizeConstraint(1, MAX)
-        ))
+        namedtype.NamedType("certificate", rfc5280.Certificate()),
+        namedtype.NamedType(
+            "other",
+            OtherCertificateFormat().subtype(
+                implicitTag=tag.Tag(
+                    tag.tagClassContext,
+                    tag.tagFormatConstructed,
+                    3,
+                )
+            ),
+        ),
     )
+
+
+# ---------------------------------------------------------------------------
+# AttestationStatement
+# ---------------------------------------------------------------------------
+
+
+# AttestationStatement ::= SEQUENCE {
+#     type           ATTESTATION-STATEMENT.&id({AttestationStatementSet}),
+#     bindsPublicKey [0] BOOLEAN DEFAULT TRUE,
+#     stmt           ATTESTATION-STATEMENT.&Type(
+#                        {AttestationStatementSet}{@type}),
+#     attrs          [1] Attributes {{AttestAttrSet}} OPTIONAL
+# }
+# draft-ietf-lamps-csr-attestation-22, Section 4.1, Figure 1
+class AttestationStatement(univ.Sequence):
+    """Single attestation statement (Evidence, Endorsement, or AR)."""
+
+    componentType = namedtype.NamedTypes(
+        namedtype.NamedType("type", univ.ObjectIdentifier()),
+        namedtype.DefaultedNamedType(
+            "bindsPublicKey",
+            univ.Boolean(True).subtype(
+                implicitTag=tag.Tag(
+                    tag.tagClassContext,
+                    tag.tagFormatSimple,
+                    0,
+                )
+            ),
+        ),
+        namedtype.NamedType("stmt", univ.Any()),
+        namedtype.OptionalNamedType(
+            "attrs",
+            AttestAttrSet().subtype(
+                implicitTag=tag.Tag(
+                    tag.tagClassContext,
+                    tag.tagFormatConstructed,
+                    1,
+                )
+            ),
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# AttestationBundle
+# ---------------------------------------------------------------------------
+
+
+# Helper: SEQUENCE SIZE (1..MAX) OF AttestationStatement
+# draft-ietf-lamps-csr-attestation-22, Section 4.1, Figure 2
+class _AttestationSequence(univ.SequenceOf):
+    componentType = AttestationStatement()
+    subtypeSpec = constraint.ValueSizeConstraint(1, float("inf"))
+
+
+# Helper: SEQUENCE SIZE (1..MAX) OF LimitedCertChoices
+# draft-ietf-lamps-csr-attestation-22, Section 4.1, Figure 2
+class _CertSequence(univ.SequenceOf):
+    componentType = LimitedCertChoices()
+    subtypeSpec = constraint.ValueSizeConstraint(1, float("inf"))
+
+
+# AttestationBundle ::= SEQUENCE {
+#     attestations  SEQUENCE SIZE (1..MAX) OF AttestationStatement,
+#     certs         SEQUENCE SIZE (1..MAX) OF LimitedCertChoices OPTIONAL
+# }
+# draft-ietf-lamps-csr-attestation-22, Section 4.1, Figure 2
+class AttestationBundle(univ.Sequence):
+    componentType = namedtype.NamedTypes(
+        namedtype.NamedType("attestations", _AttestationSequence()),
+        namedtype.OptionalNamedType("certs", _CertSequence()),
+    )
+
 
 # Construct an Tcg-attest-certify as per draft-ietf-lamps-csr-attestation appendix A.2
 tcg_csr_certify = TcgAttestCertify()
@@ -142,29 +239,50 @@ tcg_csr_certify[TPM_S_ATTEST] = args_vars[TPM_S_ATTEST_ARG].read()
 tcg_csr_certify[SIGNATURE] = args_vars[SIGNATURE_ARG].read()
 tcg_csr_certify[TPM_T_PUBLIC] = args_vars[TPM_T_PUBLIC_ARG].read()
 
-#tcg_csr_certify_der = encode(tcg_csr_certify)
+# tcg_csr_certify_der = encode(tcg_csr_certify)
 
 # Construct an EvidenceStatement
-evidenceStatement = EvidenceStatement()
-evidenceStatement['type'] = OID_cg_attest_tpm_certify
-evidenceStatement['stmt'] = tcg_csr_certify
-evidenceStatement['hint'] = char.UTF8String(hint)
+attestation_statement = AttestationStatement()
+attestation_statement["type"] = OID_cg_attest_tpm_certify
+attestation_statement["stmt"] = tcg_csr_certify
 
 # Construct an EvidenceBundle
-evidenceBundle = EvidenceBundle()
-evidenceBundle['evidences'].append(evidenceStatement)
-for certFile in args_vars['akCertChain']:
+attestation_bundle = AttestationBundle()
+attestation_bundle["attestations"].append(attestation_statement)
 
-    print("certFile: "+ str(certFile))
 
-    substrate=pem.readPemFromFile(certFile)
-    if substrate == '':
-        print('File '+certFile.name+' could not be read as PEM. Skipping')
+def _parse_certs_to_limited_choices(
+        cert_list: list[rfc5280.Certificate],
+) -> list[LimitedCertChoices]:
+    """Convert a list of X.509 certificates to a list of `LimitedCertChoices` with the 'certificate' option."""
+    out = []
+    for x in cert_list:
+        if isinstance(x, rfc5280.Certificate):
+            out.append(LimitedCertChoices().setComponentByName("certificate", x))
+        elif isinstance(x, OtherCertificateFormat):
+            out.append(LimitedCertChoices().setComponentByName("other", x))
+        elif isinstance(x, LimitedCertChoices):
+            out.append(x)
+        else:
+            raise TypeError(f"Unexpected type {type(x)} in list of certificates")
+    return out
+
+
+certs = []
+for certFile in args_vars["akCertChain"]:
+    print("certFile: " + str(certFile))
+
+    substrate = pem.readPemFromFile(certFile)
+    if substrate == "":
+        print("File " + certFile.name + " could not be read as PEM. Skipping")
         continue
 
-    certificate, rest = decoder.decode(io.BytesIO(substrate), asn1Spec=rfc5280.Certificate())
+    certificate, rest = decoder.decode(
+        io.BytesIO(substrate), asn1Spec=rfc5280.Certificate()
+    )
+    certs.append(certificate)
 
-    evidenceBundle['certs'].append(certificate)
+attestation_bundle["certs"].extend(_parse_certs_to_limited_choices(certs))
 
 
 # Construct an attr-evidence
@@ -174,8 +292,8 @@ for certFile in args_vars['akCertChain']:
 #   IDENTIFIED BY id-aa-evidence
 # }
 attr_evidence = rfc5280.Attribute()
-attr_evidence['type'] = id_aa_evidence
-attr_evidence['values'].append(evidenceBundle)
+attr_evidence["type"] = id_aa_evidence
+attr_evidence["values"].append(attestation_bundle)
 
 
 csr_builder = x509.CertificateSigningRequestBuilder()
