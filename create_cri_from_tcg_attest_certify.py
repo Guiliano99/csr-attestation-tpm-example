@@ -74,6 +74,18 @@ parser.add_argument(SIGNATURE_ARG, type=argparse.FileType('rb'))
 parser.add_argument(TPM_T_PUBLIC_ARG, type=argparse.FileType('rb'))
 parser.add_argument('publickeyfilepem', type=argparse.FileType('rb'))
 parser.add_argument('akCertChain', type=argparse.FileType('r'), nargs='+')
+parser.add_argument(
+    '--extra-attribute',
+    action='store_true',
+    default=False,
+    help='Negative example: append a second bogus challengePassword attribute to the CSR attributes',
+)
+parser.add_argument(
+    '--bad-tpm-signature',
+    action='store_true',
+    default=False,
+    help='Negative example: corrupt the first byte of the TPM attestation signature (outer CSR signature remains valid)',
+)
 
 args = parser.parse_args()
 args_vars = vars(args)
@@ -236,7 +248,12 @@ class AttestationBundle(univ.Sequence):
 # Construct an Tcg-attest-certify as per draft-ietf-lamps-csr-attestation appendix A.2
 tcg_csr_certify = TcgAttestCertify()
 tcg_csr_certify[TPM_S_ATTEST] = args_vars[TPM_S_ATTEST_ARG].read()
-tcg_csr_certify[SIGNATURE] = args_vars[SIGNATURE_ARG].read()
+_sig_bytes = args_vars[SIGNATURE_ARG].read()
+if args.bad_tpm_signature:
+    # Flip the first byte to produce an invalid TPM attestation signature while
+    # leaving the outer PKCS#10 signature (computed over the whole CRI) correct.
+    _sig_bytes = bytes([_sig_bytes[0] ^ 0xFF]) + _sig_bytes[1:]
+tcg_csr_certify[SIGNATURE] = _sig_bytes
 tcg_csr_certify[TPM_T_PUBLIC] = args_vars[TPM_T_PUBLIC_ARG].read()
 
 # tcg_csr_certify_der = encode(tcg_csr_certify)
@@ -319,6 +336,10 @@ cri_pyasn1, _ = decode(cri_der, rfc2986.CertificationRequestInfo())
 # Add in the evidence attribute.
 cri_pyasn1['attributes'].append(attr_evidence)
 
+# Negative example: append the id-aa-evidence attribute a second time.
+if args.extra_attribute:
+    cri_pyasn1['attributes'].append(attr_evidence)
+
 # Swap out the dummy public key for the TPM-controlled one
 pubkey = serialization.load_pem_public_key(args.publickeyfilepem.read())
 pubkey_der = pubkey.public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
@@ -326,5 +347,12 @@ pubkey_der = pubkey.public_bytes(serialization.Encoding.DER, serialization.Publi
 spki, _ = decode(pubkey_der, rfc5280.SubjectPublicKeyInfo())
 cri_pyasn1['subjectPKInfo']['subjectPublicKey'] = spki['subjectPublicKey']
 
-with open('out.cri', 'wb') as f:
+if args.bad_tpm_signature:
+    output_filename = 'out-neg-bad-tpm-sig.cri'
+elif args.extra_attribute:
+    output_filename = 'out-neg-extra-attr.cri'
+else:
+    output_filename = 'out.cri'
+
+with open(output_filename, 'wb') as f:
     f.write(encode(cri_pyasn1))
