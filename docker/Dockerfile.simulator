@@ -1,0 +1,30 @@
+# Builds the TCG reference TPM 2.0 simulator.
+# This is the same simulator used by the tpm-rs project's client/Dockerfile.
+# Source: https://github.com/TrustedComputingGroup/TPM
+FROM ubuntu:24.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    git \
+    libssl-dev \
+    pkg-config \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+RUN git clone https://github.com/TrustedComputingGroup/TPM.git .
+
+# The CMakeLists.txt lives in the TPMCmd/ subdirectory, not the repo root.
+RUN cmake -S TPMCmd -B DebugLinuxOpenSSL3 && \
+    cmake --build DebugLinuxOpenSSL3 --parallel
+
+# Put the simulator binary on PATH.
+RUN ln -s /build/DebugLinuxOpenSSL3/Simulator/Simulator /usr/local/bin/tpm2-simulator
+
+EXPOSE 2321 2322
+
+# The simulator listens on TCP ports 2321 (commands) and 2322 (platform control).
+CMD ["/usr/local/bin/tpm2-simulator"]

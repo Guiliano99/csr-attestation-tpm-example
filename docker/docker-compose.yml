@@ -1,0 +1,40 @@
+services:
+
+  # ── TCG reference TPM 2.0 simulator ─────────────────────────────────────────
+  # Exposes the Microsoft TPM Simulator (mssim) protocol on TCP 2321/2322.
+  # This is the same simulator built by the tpm-rs project's Dockerfile.
+  simulator:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.simulator
+    # Keep the simulator running even after the client exits.
+    restart: unless-stopped
+    # Do not expose ports to the host by default; they are only needed
+    # within the Compose network.  Uncomment the lines below if you want
+    # to reach the simulator from outside Docker (e.g. bare-metal tpm2-tools).
+    # ports:
+    #   - "2321:2321"
+    #   - "2322:2322"
+    healthcheck:
+      # The simulator is ready once it is listening on port 2321.
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/localhost/2321' 2>/dev/null && echo ok"]
+      interval: 3s
+      timeout: 5s
+      retries: 10
+
+  # ── Client: tpm2-tools + OpenSSL + Python ───────────────────────────────────
+  client:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.client
+    depends_on:
+      - simulator
+    environment:
+      # Use the mssim TCTI so every tpm2_* command talks to the simulator.
+      # "simulator" resolves to the simulator container's IP automatically.
+      TPM2TOOLS_TCTI: "mssim:host=simulator,port=2321"
+    # Mount the project directory so output artefacts (ca/, client/, verifier/)
+    # are written back to the host.
+    volumes:
+      - ..:/app
+    working_dir: /app

@@ -5,10 +5,16 @@ set -e
 # Create the TPM Endorsement Key (EK).
 echo -e "   *** Creating EK"
 tpm2_createek -c $cdir/ek.ctx -u $cdir/ek.pub
+# NOTE: tpm2_createek makes the EK *persistent* (NV handle 0x81010001).
+# Persistent objects do not occupy a transient slot, so no tpm2_flushcontext
+# is needed or possible here.
 # 
 # Create the Primary Storage Key (SRK). 
 echo -e "\n   *** Creating Primary Storage Key (SRK)"
 tpm2_createprimary -C o -c $cdir/primaryStorage.ctx
+# Flush the transient slot so tpm2_createak has room.
+# --transient-object flushes all transient handles; context is saved to .ctx.
+tpm2_flushcontext --transient-object
 #
 # Create the Attestation Key (AK). The AK will be in the Endorsement Hierarchy under the EK.
 echo -e "\n   *** Creating the Attestation Key (AK)"
@@ -33,6 +39,9 @@ tpm2_createak -C $cdir/ek.ctx -G rsa -c $cdir/ak.ctx -f PEM -u $cdir/ak.pem -r $
 
 echo -e "\n   *** Create the PEM format for the AK public key"
 tpm2_readpublic -c $cdir/ak.ctx -f pem -o $cdir/ak.pem
+# Free all transient slots before OpenSSL work — nothing TPM-related is
+# needed until the next script.
+tpm2_flushcontext --transient-object
 #
 # Create an AK Certificate
 echo -e "\n   *** Create a "fake" csr for an AK Certificate"

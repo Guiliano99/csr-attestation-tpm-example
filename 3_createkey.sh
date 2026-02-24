@@ -26,24 +26,37 @@ set -e
 # key1-csr.pem        : key1's csr (the final result)   : PEM format
 #
 echo -e "\n   *** Creating key1 ***"
+# tpm2_create loads primaryStorage as parent for the operation.
 tpm2_create -C $cdir/primaryStorage.ctx -u $cdir/key1.pub -r $cdir/key1.priv
+# Flush the parent from the transient area; key1 blobs are on disk (key1.pub/key1.priv).
+tpm2_flushcontext --transient-object
 #
 # The key must be loaded to perform the tpm2_certify command (See Compatibility Note above)
 echo -e "\n   ***  Loading key1 ***"
+# This reloads primaryStorage and key1 — both occupy transient slots.
 tpm2_load -C $cdir/primaryStorage.ctx -c $cdir/key1.ctx -u $cdir/key1.pub -r $cdir/key1.priv
+# Flush ALL transients (primaryStorage + key1).
+# tpm2_certify will reload ak and key1 from their .ctx files automatically.
+tpm2_flushcontext --transient-object
 #
 # Attest to key1. This returns key1.tpmSAttest is a TPMS_ATTEST structure
 # NOTE: The TPM tpm2_certify command returns a TPM2B_ATTEST structure but the tpm2-tools remove the encapulated TPMS_ATTEST and
 # return that as the signature is only over the TPMS_ATTSET structure (not including the size which is part of TPM2B_ATTEST).
 echo -e "\n   *** Get attestation for key1 ***"
+# tpm2_certify loads ak.ctx and key1.ctx; both become transient.
 tpm2_certify -C $cdir/ak.ctx -g sha256 -c $cdir/key1.ctx -o $cdir/key1.tpmSAttest -f plain -s $cdir/key1.tpmSAttest.sig
+# Flush ak and key1; tpm2_readpublic will reload key1 from key1.ctx.
+tpm2_flushcontext --transient-object
 echo "***\nPrint attestation data for key1 (Informational only) ***"
 tpm2_print -t TPMS_ATTEST $cdir/key1.tpmSAttest
 #
 # Create key1 PEM formatted public key
 echo -e "\n   *** Get the key1 public key in PEM format"
 tpm2_readpublic -c $cdir/key1.ctx -f pem -o $cdir/key1-pub.pem
+tpm2_flushcontext --transient-object
 #
 echo -e "\n   *** Get the key1 TPMT_PUBLIC structure"
 tpm2_readpublic -c $cdir/key1.ctx -f tpmt -o $cdir/key1.tpmTPublic
+# Flush key1; 4_createcsr.sh (tpm2_sign) will reload it from key1.ctx.
+tpm2_flushcontext --transient-object
 #

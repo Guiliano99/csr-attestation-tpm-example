@@ -1,0 +1,84 @@
+# Client container: builds tpm2-tss and tpm2-tools from source (version >=5.7
+# required for tpm2_print -t TPMS_ATTEST), plus Python dependencies.
+FROM ubuntu:22.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+
+# ── System build dependencies ──────────────────────────────────────────────────
+RUN apt-get update && apt-get install -y \
+    autoconf \
+    autoconf-archive \
+    automake \
+    build-essential \
+    curl \
+    git \
+    libcmocka-dev \
+    libcurl4-openssl-dev \
+    libgcrypt-dev \
+    libglib2.0-dev \
+    libjson-c-dev \
+    libssl-dev \
+    libtool \
+    openssl \
+    pkg-config \
+    python3 \
+    python3-pip \
+    python3-venv \
+    uuid-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# ── Build tpm2-tss (required by tpm2-tools) ────────────────────────────────────
+# Pin to a release tag so that git describe resolves a proper semver.
+# Without --branch <tag>, a shallow clone yields a bare commit hash as the
+# version, which causes tpm2-tools ./configure to fail its
+# 'tss2-esys >= 2.4.0' pkg-config check.
+WORKDIR /build/tpm2-tss
+RUN git clone --depth 1 --branch 4.1.3 https://github.com/tpm2-software/tpm2-tss.git . && \
+    ./bootstrap && \
+    ./configure --prefix=/usr && \
+    make -j"$(nproc)" && \
+    make install && \
+    ldconfig
+
+# ── Build tpm2-tools (>=5.7 for tpm2_print -t TPMS_ATTEST) ───────────────────
+# Pin to 5.7 — the minimum version that implements tpm2_print -t TPMS_ATTEST.
+WORKDIR /build/tpm2-tools
+RUN git clone --depth 1 --branch 5.7 https://github.com/tpm2-software/tpm2-tools.git . && \
+    ./bootstrap && \
+    ./configure --prefix=/usr && \
+    make -j"$(nproc)" && \
+    make install
+
+# ── Python virtual environment ─────────────────────────────────────────────────
+# Keep venv outside /app because docker-compose bind-mounts the repo to /app.
+# If the venv were under /app, it would be hidden at runtime.
+WORKDIR /tmp
+COPY requirements.txt /tmp/requirements.txt
+RUN python3 -m venv /opt/venv && \
+    /opt/venv/bin/pip install --upgrade pip && \
+    /opt/venv/bin/pip install -r /tmp/requirements.txt
+
+# ── Copy project files ─────────────────────────────────────────────────────────
+COPY . /app/
+WORKDIR /app
+
+# Activate the venv for every RUN / CMD that follows.
+ENV PATH="/opt/venv/bin:${PATH}"
+
+# ── Point tpm2-tools at the simulator via the mssim TCTI ──────────────────────
+# "simulator" is the Docker Compose service name; it resolves automatically.
+# Ports: 2321 = TPM command port, 2322 = platform control port.
+ENV TPM2TOOLS_TCTI="mssim:host=simulator,port=2321"
+
+# Default: initialize the simulator, then run all five steps in order.
+#
+# The mssim TCTI (tpm2-tss) automatically sends PowerOn + NV_ON to the
+# simulator's platform port (2322), but the TPM still needs a one-time
+# TPM2_Startup command before any other commands will succeed.
+CMD ["bash", "-c", \
+     "tpm2_startup -c && \
+      ./1_makeCA.sh && \
+      ./2_initial_provision.sh && \
+      ./3_createkey.sh && \
+      ./4_createcsr.sh && \
+      ./5_verifykey.sh"]
